@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WealthEasy — Test Dialer</title>
+    <style>
+        body {
+            font-family: monospace;
+            background: #0a0a0a;
+            color: #00ff88;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            gap: 20px;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 10px; }
+        #status {
+            font-size: 0.9rem;
+            color: #888;
+            min-height: 24px;
+        }
+        button {
+            padding: 14px 40px;
+            font-size: 1rem;
+            font-family: monospace;
+            border: 1px solid #00ff88;
+            background: transparent;
+            color: #00ff88;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        button:hover { background: #00ff8820; }
+        button:disabled { opacity: 0.3; cursor: not-allowed; }
+        #log {
+            width: 500px;
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            padding: 10px;
+            font-size: 0.75rem;
+            color: #aaa;
+            background: #111;
+        }
+    </style>
+</head>
+<body>
+    <h1>WealthEasy Voice Agent — Test Dialer</h1>
+    <div id="status">Loading Twilio SDK...</div>
+
+    <button id="callBtn" disabled onclick="makeCall()">📞 Call Aryan</button>
+    <button id="hangupBtn" disabled onclick="hangUp()">🔴 Hang Up</button>
+
+    <div id="log"></div>
+
+    <!-- Twilio Voice SDK v2 (latest) -->
+    <script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.10.2/dist/twilio.min.js"></script>
+    <script>
+        const SERVER_URL = window.location.origin;
+
+        let device = null;
+        let call   = null;
+
+        function log(msg) {
+            const div  = document.getElementById("log");
+            const time = new Date().toLocaleTimeString();
+            div.innerHTML += `<div>[${time}] ${msg}</div>`;
+            div.scrollTop  = div.scrollHeight;
+        }
+
+        function setStatus(msg) {
+            document.getElementById("status").textContent = msg;
+            log(msg);
+        }
+
+        async function setup() {
+            try {
+                const res   = await fetch(`${SERVER_URL}/token`);
+                const data  = await res.json();
+
+                // Twilio SDK v2 uses Device constructor directly
+                device = new Twilio.Device(data.token, {
+                    logLevel: 1,
+                    codecPreferences: ["opus", "pcmu"],
+                });
+
+                device.on("registered", () => {
+                    setStatus("Ready — click Call Aryan to start");
+                    document.getElementById("callBtn").disabled = false;
+                });
+
+                device.on("error", (err) => {
+                    setStatus(`Error: ${err.message}`);
+                });
+
+                // Register the device so it can make calls
+                device.register();
+
+            } catch (err) {
+                setStatus(`Setup failed: ${err.message}`);
+                log(err.stack || err);
+            }
+        }
+
+        async function makeCall() {
+            if (!device) return;
+            setStatus("Calling...");
+
+            try {
+                call = await device.connect();
+
+                call.on("accept", () => {
+                    setStatus("Connected — speak now");
+                    document.getElementById("callBtn").disabled   = true;
+                    document.getElementById("hangupBtn").disabled = false;
+                });
+
+                call.on("disconnect", () => {
+                    setStatus("Call ended");
+                    call = null;
+                    document.getElementById("callBtn").disabled   = false;
+                    document.getElementById("hangupBtn").disabled = true;
+                });
+
+                call.on("error", (err) => {
+                    setStatus(`Call error: ${err.message}`);
+                });
+
+            } catch (err) {
+                setStatus(`Call failed: ${err.message}`);
+            }
+        }
+
+        function hangUp() {
+            if (call) call.disconnect();
+        }
+
+        setup();
+    </script>
+</body>
+</html>
