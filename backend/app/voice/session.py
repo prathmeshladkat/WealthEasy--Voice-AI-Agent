@@ -280,6 +280,7 @@ class CallSession:
         except Exception as e:
             logger.error(f"LLM task error: {e}", exc_info=True)
 
+
     async def _on_llm_sentence(self, sentence: str):
         """Called by stream_llm_response for each complete sentence."""
         if self._interrupt_event.is_set() or not self._active_ctx_id:
@@ -288,10 +289,12 @@ class CallSession:
         await self._tts.send_text(self._active_ctx_id, sentence)
         await self._emit("transcript", {"role": "assistant", "text": sentence})
 
+
     async def _on_tool_start(self, tool_name: str):
         """Called when LLM decides to call a tool — notify dashboard."""
         logger.info(f"Tool call: {tool_name}")
         await self._emit("tool_call", {"tool": tool_name})
+
 
     # ── TTS callbacks ──────────────────────────────────────────────────────────
 
@@ -306,10 +309,12 @@ class CallSession:
             await self._emit("state_change", {"state": "SPEAKING"})
         await self._playback.put(pcm_bytes)
 
+
     async def _on_tts_context_done(self, context_id: str):
         """ElevenLabs finished sending audio for this context."""
         if context_id == self._active_ctx_id:
             await self._playback.put(None)   # sentinel: queue can fire on_done now
+
 
     async def _on_playback_done(self):
         """Playback queue fully drained — agent has actually finished speaking."""
@@ -318,10 +323,12 @@ class CallSession:
             logger.info("Agent finished speaking → IDLE")
             await self._emit("state_change", {"state": "IDLE"})
 
+
     # ── Barge-in ───────────────────────────────────────────────────────────────
 
     def _is_agent_speaking(self) -> bool:
         return self._speaking_state == AgentSpeakingState.SPEAKING
+    
 
     async def _handle_interrupt(self):
         self._interruption_count += 1
@@ -340,6 +347,7 @@ class CallSession:
         self._current_assistant_text = ""
         self._speaking_state         = AgentSpeakingState.IDLE
 
+
     async def _interrupt_watcher(self):
         """Background task — watches interrupt_event set by VAD."""
         while True:
@@ -350,6 +358,7 @@ class CallSession:
                     self._interrupt_event.clear()
             except asyncio.CancelledError:
                 break
+
 
     # ── Speaking helper ────────────────────────────────────────────────────────
 
@@ -366,6 +375,7 @@ class CallSession:
         await self._tts.send_text(ctx_id, text, flush=True)
         await self._tts.close_context(ctx_id)
 
+
     # ── Hangup ─────────────────────────────────────────────────────────────────
 
     async def _schedule_hangup(self):
@@ -373,6 +383,7 @@ class CallSession:
         self._call_ending = True
         await asyncio.sleep(3)   # let final message play out
         await self._hangup()
+
 
     async def _hangup(self):
         try:
@@ -390,6 +401,7 @@ class CallSession:
             logger.info("Twilio hangup sent.")
         except Exception as e:
             logger.error(f"Hangup failed: {e}")
+            
 
     # ── DB helpers ─────────────────────────────────────────────────────────────
 

@@ -46,6 +46,7 @@ from app.voice.twilio_handler import twilio_ws_handler
 from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 
 # ── Dashboard WebSocket connections ───────────────────────────────────────────
@@ -107,6 +108,12 @@ app = FastAPI(
     lifespan = lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "https://*.ngrok-free.dev"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
