@@ -34,7 +34,7 @@ from app.models import CallLog
 from app.utils.audio_utils import base64_to_mulaw, mulaw_to_pcm16
 from app.utils.logger import logger
 from app.voice.deepgram_client import DeepgramSTT
-from app.voice.elevanlabs_client import ElevenLabsTTS
+from app.voice.elevenlabs_client import ElevenLabsTTS
 from app.voice.intent_classifier import classify_intent
 from app.voice.llm_stream import (
     add_user_message,
@@ -105,10 +105,9 @@ class CallSession:
         )
 
         self._tasks: list[asyncio.Task] = []
-        self._broadcast = None
+        
 
-    def set_broadcast(self, fn):
-        self._broadcast = fn
+    
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -132,6 +131,8 @@ class CallSession:
         # Kick off greeting — moves state machine to VERIFY_PHONE
         result = self._state_machine.get_greeting()
         await self._speak(result.agent_message)
+
+        
 
         logger.info("CallSession ready.")
 
@@ -253,6 +254,7 @@ class CallSession:
                 user_id       = self._verified_user.id,
                 on_sentence   = self._on_llm_sentence,
                 on_tool_start = self._on_tool_start,
+                
             )
             # LLM finished — update history and close TTS context
             self._messages = updated_messages
@@ -294,12 +296,14 @@ class CallSession:
         """Called when LLM decides to call a tool — notify dashboard."""
         logger.info(f"Tool call: {tool_name}")
         await self._emit("tool_call", {"tool": tool_name})
+    
 
 
     # ── TTS callbacks ──────────────────────────────────────────────────────────
 
     async def _on_tts_audio(self, pcm_bytes: bytes):
         """Audio chunk received from ElevenLabs — push to playback queue."""
+         
         if self._interrupt_event.is_set():
             return
         if not self._first_audio_sent:
@@ -455,8 +459,8 @@ class CallSession:
     # ── Dashboard broadcast ────────────────────────────────────────────────────
 
     async def _emit(self, event: str, data: dict):
-        if self._broadcast:
-            try:
-                await self._broadcast({"event": event, **data})
-            except Exception:
-                pass
+        from app.broadcast import publish
+        try:
+            await publish({"event": event, **data})
+        except Exception as e:
+            logger.error(f"Emit failed: {e}")

@@ -6,6 +6,7 @@ import { CallerIdentityPanel }  from '@/components/caller-identity-panel';
 import { LiveTranscriptPanel }  from '@/components/live-transcript-panel';
 import { ToolsDataPanel }       from '@/components/tools-data-panel';
 import { CallButton }           from '@/components/call-button';
+import { LiveKitCallButton } from '@/components/livekit-call-button';
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/dashboard/ws';
 
@@ -34,7 +35,7 @@ export default function Home() {
               {state.connected ? 'System Online' : 'Disconnected'}
             </span>
           </div>
-          <CallButton />
+          <LiveKitCallButton />
           <span className="text-xs font-mono text-muted-foreground">v1.0.0 · Aryan Agent</span>
         </div>
       </div>

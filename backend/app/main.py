@@ -47,6 +47,7 @@ from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from app.voice.livekit_utils import generate_livekit_token
 
 
 # ── Dashboard WebSocket connections ───────────────────────────────────────────
@@ -54,21 +55,11 @@ from fastapi.middleware.cors import CORSMiddleware
 # When a call event happens (barge-in, transcript, tool call etc.)
 # we broadcast it to every connected dashboard tab.
 
-_dashboard_connections: Set[WebSocket] = set()
 
 
-async def broadcast(event: dict):
-    """Send a JSON event to all connected dashboard WebSocket clients."""
-    if not _dashboard_connections:
-        return
-    message = json.dumps(event)
-    dead    = set()
-    for ws in _dashboard_connections:
-        try:
-            await ws.send_text(message)
-        except Exception:
-            dead.add(ws)
-    _dashboard_connections -= dead
+
+
+    
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -139,6 +130,10 @@ async def get_token():
 async def dialer():
     return FileResponse("dialer.html")
 
+@app.get("/livekit/token")
+async def livekit_token():
+    return generate_livekit_token()
+
 
 @app.post("/voice/incoming", response_class=PlainTextResponse)
 async def voice_incoming(request: Request):
@@ -170,36 +165,36 @@ async def voice_incoming(request: Request):
 
 @app.websocket("/voice/stream")
 async def voice_stream(websocket: WebSocket):
-    """
-    Twilio media stream WebSocket.
-    Hands off to twilio_ws_handler which creates a CallSession.
-    Passes the broadcast function so call events reach the dashboard.
-    """
-    await twilio_ws_handler(websocket, broadcast_fn=broadcast)
+    await twilio_ws_handler(websocket) 
 
 
 @app.websocket("/dashboard/ws")
 async def dashboard_ws(websocket: WebSocket):
-    """
-    Dashboard WebSocket — browser connects here to receive real-time events.
-    Events: call_started, transcript, barge_in, tool_call, state_change,
-            verified, intent, call_ended.
-    """
+    import asyncio
+    import redis.asyncio as redis
+    from app.config import settings
+
     await websocket.accept()
-    _dashboard_connections.add(websocket)
-    logger.info(f"Dashboard connected. Total: {len(_dashboard_connections)}")
+    logger.info("Dashboard WebSocket connected")
+
+    # Create a separate Redis connection for pub/sub
+    r = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    await pubsub.subscribe("wealtheasy:dashboard")
 
     try:
-        # Keep connection alive — browser sends pings, we just wait
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    await websocket.send_text(message["data"])
+                except Exception:
+                    break
+    except Exception:
         pass
     finally:
-        _dashboard_connections.discard(websocket)
-        logger.info(f"Dashboard disconnected. Total: {len(_dashboard_connections)}")
-
-
+        await pubsub.unsubscribe("wealtheasy:dashboard")
+        await r.aclose()
+        logger.info("Dashboard WebSocket disconnected")
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

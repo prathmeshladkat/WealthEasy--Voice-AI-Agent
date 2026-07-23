@@ -38,6 +38,10 @@ class Settings:
  
     
     REDIS_URL: str = _require("REDIS_URL")
+
+    LIVEKIT_URL       : str = _require("LIVEKIT_URL")
+    LIVEKIT_API_KEY   : str = _require("LIVEKIT_API_KEY")
+    LIVEKIT_API_SECRET: str = _require("LIVEKIT_API_SECRET")
  
     
     ENV: str = os.environ.get("ENV", "development")

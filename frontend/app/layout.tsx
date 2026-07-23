@@ -27,10 +27,7 @@ export default function RootLayout({
       <body className="antialiased bg-background text-foreground overflow-hidden">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}
-        <Script
-          src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.10.2/dist/twilio.min.js"
-          strategy="beforeInteractive"
-        />
+
       </body>
     </html>
   )

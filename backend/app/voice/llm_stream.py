@@ -61,6 +61,7 @@ async def stream_llm_response(
     user_id       : int,
     on_sentence   : Callable[[str], Awaitable[None]],
     on_tool_start : Callable[[str], Awaitable[None]],
+    
 ) -> list[dict]:
     """
     Streams a Groq response handling both text tokens and tool calls.
@@ -142,6 +143,7 @@ async def stream_llm_response(
 
             tool_result = await execute_tool(tool_name, tool_args, user_id)
             logger.info(f"Tool result received: {list(tool_result.keys()) if tool_result else 'empty'}")
+            
 
             # Inject tool call + result into message history
             messages.append({

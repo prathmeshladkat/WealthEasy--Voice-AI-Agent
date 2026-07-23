@@ -23,7 +23,7 @@ print(extract_phone_number("plus 91 98765 43210"))                              
 print(extract_phone_number("hello how are you"))                                  # None
 
 print()
-print("=" * 50)
+print("6MoEUz34rbRrmmyxgRm4")
 print("PAN VALIDATION TESTS")
 print("=" * 50)
 

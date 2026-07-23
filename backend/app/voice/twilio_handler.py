@@ -19,7 +19,7 @@ from app.utils.logger import logger
 from app.voice.session import CallSession
 
 
-async def twilio_ws_handler(websocket: WebSocket, broadcast_fn=None):
+async def twilio_ws_handler(websocket: WebSocket):
     await websocket.accept()
     logger.info("Twilio WebSocket connected.")
 
@@ -41,17 +41,16 @@ async def twilio_ws_handler(websocket: WebSocket, broadcast_fn=None):
                 start_data = data.get("start", {})
                 stream_sid = start_data.get("streamSid") or data.get("streamSid", "")
                 call_sid   = start_data.get("callSid", "unknown")
-
+               
                 logger.info(f"Twilio: stream started (callSid={call_sid} streamSid={stream_sid})")
-
+               
                 session = CallSession(
                     websocket  = websocket,
                     stream_sid = stream_sid,
                     call_sid   = call_sid,
                 )
 
-                if broadcast_fn:
-                    session.set_broadcast(broadcast_fn)
+                
 
                 await session.start()
 

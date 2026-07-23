@@ -140,10 +140,14 @@ class ElevenLabsTTS:
                 except json.JSONDecodeError:
                     continue
 
+                
+
+                
                 ctx_id = msg.get("context_id") or msg.get("contextId", "")
 
-                if msg.get("audio"):
+                if msg.get("audio") is not None:
                     audio = base64.b64decode(msg["audio"])
+                    
                     await self._on_audio_chunk(audio)
 
                 if msg.get("isFinal") is True or msg.get("is_final") is True:
