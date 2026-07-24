@@ -101,7 +101,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://*.ngrok-free.dev"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://wealth-easy-voice-ai-agent.vercel.app",  # no trailing slash — browsers never send one in the Origin header, so a mismatched trailing slash silently blocks every request
+    ],
+    # allow_origins only does exact string matches — it has no wildcard support,
+    # so "https://*.ngrok-free.dev" as a list entry would never actually match a
+    # real ngrok URL. allow_origin_regex is the correct place for pattern matching.
+    allow_origin_regex=r"https://.*\.ngrok-free\.dev",
     allow_methods=["*"],
     allow_headers=["*"],
 )
