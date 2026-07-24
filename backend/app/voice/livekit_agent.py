@@ -93,13 +93,22 @@ class LiveKitCallSession:
         await self._room.local_participant.publish_track(self._audio_track)
         logger.info("Audio track published to room")
 
-        # Register event handlers
-        self._room.on("track_subscribed",        self._on_track_subscribed)
+        # Register handlers that don't depend on STT/TTS being ready yet
         self._room.on("participant_disconnected", self._on_participant_disconnected)
 
-        # Connect STT/TTS
+        # Connect STT/TTS BEFORE we let LiveKit start delivering caller audio.
+        # (Previously "track_subscribed" was registered here, before this connect()
+        # call — since connect() is a real network round-trip, LiveKit could fire
+        # track_subscribed and start pushing real caller audio into stt.send()
+        # while self._stt._connected was still False, silently dropping the very
+        # start of the caller's first utterance on every single call. That
+        # partial/missing audio at the start of an utterance is what was producing
+        # consistently garbled transcripts.)
         await self._stt.connect()
         await self._tts.connect()
+
+        # Only NOW is it safe to let caller audio start flowing to Deepgram.
+        self._room.on("track_subscribed", self._on_track_subscribed)
 
         await publish({"event": "call_started", "call_sid": self._call_sid})
 
@@ -291,7 +300,11 @@ class LiveKitCallSession:
 
         if result.verified_user:
             self._verified_user       = result.verified_user
-            self._messages            = build_initial_messages()
+            # Use first name only, same as state_machine.py's own greeting —
+            # this is what actually fixes the "invented a wrong name" bug,
+            # since the LLM previously had zero real identity info to work with.
+            first_name                = result.verified_user.name.split()[0]
+            self._messages            = build_initial_messages(user_name=first_name)
             self._state_machine.state = CallState.QUERY
             await publish({
                 "event"  : "verified",

@@ -18,6 +18,51 @@ from app.config import settings
 from app.tools.definitions import TOOL_DEFINITIONS
 from app.tools.executor import execute_tool
 from app.utils.logger import logger
+from app.utils.number_to_words import format_rupees_spoken, format_number_spoken
+
+
+# Key names (substring match, case-insensitive) that indicate a field holds a
+# rupee amount rather than a plain count/percentage/year. Used to decide
+# whether a "_spoken" field gets "rupees" appended or not.
+_MONEY_KEY_HINTS = (
+    "amount", "value", "invested", "gain", "worth", "balance",
+    "nav", "maturity", "rupee", "portfolio", "price", "cost", "total",
+)
+
+
+def _looks_like_money(key: str) -> bool:
+    key_lower = key.lower()
+    return any(hint in key_lower for hint in _MONEY_KEY_HINTS)
+
+
+def _add_spoken_fields(data):
+    """
+    Walks a tool result (dicts / lists of dicts) and adds a "<key>_spoken"
+    sibling for every numeric value, pre-formatted deterministically in
+    Python — NOT left for the LLM to convert freely.
+
+    Why: we confirmed in production that the LLM can receive a fully correct
+    number (e.g. monthly_amount: 5000) and still speak it wrong (e.g. "fifty
+    thousand rupees"). The fix is to remove that free-form conversion step
+    entirely for anything we can pre-format ourselves; the model is
+    instructed (see SYSTEM_PROMPT) to relay "_spoken" values verbatim rather
+    than recompute them from the raw number.
+    """
+    if isinstance(data, dict):
+        result = {}
+        for key, value in data.items():
+            result[key] = value
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if _looks_like_money(key):
+                    result[f"{key}_spoken"] = format_rupees_spoken(value)
+                else:
+                    result[f"{key}_spoken"] = format_number_spoken(value)
+            elif isinstance(value, (dict, list)):
+                result[key] = _add_spoken_fields(value)
+        return result
+    elif isinstance(data, list):
+        return [_add_spoken_fields(item) for item in data]
+    return data
 
 
 SENTENCE_ENDINGS = {".", "?", "!"}
@@ -33,10 +78,17 @@ IDENTITY:
 SPEECH RULES (critical — this is a voice call, not text):
 - Maximum 2 to 3 sentences per response
 - Never use markdown, bullet points, symbols, or formatting of any kind
-- Speak numbers naturally: say "twelve thousand five hundred rupees" not "12500"
-- Speak dates naturally: say "tenth of July" not "10/07"
-- Speak percentages naturally: say "twelve percent" not "12%"
 - Never say rupee symbol — always say "rupees"
+
+NUMBERS — CRITICAL, READ CAREFULLY:
+- Tool results include a "<field>_spoken" version next to every number
+  (e.g. "monthly_amount": 5000, "monthly_amount_spoken": "five thousand rupees")
+- You MUST use the "_spoken" text EXACTLY as given whenever you say that number out loud
+- Do NOT recompute, reword, or re-derive the number yourself from the raw digits —
+  the "_spoken" field is already correct and verified; retyping it in your own words
+  risks getting the magnitude wrong (e.g. confusing thousand/lakh)
+- If a number has no matching "_spoken" field, then speak it naturally as a fallback
+  (e.g. "twelve percent" not "12%", "tenth of July" not "10/07")
 
 NAV POLICY:
 - Always tell the user which NAV you are using and its date
@@ -143,7 +195,10 @@ async def stream_llm_response(
 
             tool_result = await execute_tool(tool_name, tool_args, user_id)
             logger.info(f"Tool result received: {list(tool_result.keys()) if tool_result else 'empty'}")
-            
+
+            # Deterministically pre-format every number in the result as spoken
+            # words BEFORE the model ever sees it — see _add_spoken_fields docstring.
+            tool_result = _add_spoken_fields(tool_result)
 
             # Inject tool call + result into message history
             messages.append({
@@ -203,9 +258,26 @@ def _find_sentence_boundary(text: str) -> int:
     return -1
 
 
-def build_initial_messages() -> list[dict]:
-    """Returns starting messages list for a new verified session."""
-    return [{"role": "system", "content": SYSTEM_PROMPT}]
+def build_initial_messages(user_name: str | None = None) -> list[dict]:
+    """
+    Returns starting messages list for a new verified session.
+
+    user_name: the verified caller's actual first name (from user_repo lookup
+    during VERIFY_PAN). Without this, the SYSTEM_PROMPT's instruction to
+    "address the user by their first name when you know it" has nothing to
+    draw on — the model would otherwise invent a plausible-sounding name
+    (confirmed in production: it fabricated "Rohan" for a caller actually
+    named "Priya Sharma"). Passing the real name here closes that gap.
+    """
+    system_content = SYSTEM_PROMPT
+    if user_name:
+        system_content += (
+            f"\n\nCALLER IDENTITY:\n"
+            f"- The verified caller's first name is {user_name}.\n"
+            f"- Use this exact name when addressing them or closing the call. "
+            f"Do not use any other name."
+        )
+    return [{"role": "system", "content": system_content}]
 
 
 def add_user_message(messages: list[dict], text: str) -> list[dict]:

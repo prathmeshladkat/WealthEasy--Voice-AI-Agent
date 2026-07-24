@@ -25,6 +25,16 @@ class DeepgramSTT:
         self._audio_chunks_sent = 0   # DEBUG: total send() calls since connect
         self._msg_counter       = 0   # DEBUG: total messages received from Deepgram
 
+        # Reconnection state. Without this, ANY websocket drop (network blip,
+        # keepalive ping timeout, Deepgram-side hiccup) leaves the agent
+        # permanently unable to hear the caller for the rest of the call —
+        # confirmed in production via repeated "Deepgram send error" warnings
+        # with no recovery. _should_run distinguishes "connection dropped,
+        # please reconnect" from "disconnect() was called on purpose, stop".
+        self._should_run        = False
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_attempt = 0
+
         # Accumulates finalized (is_final=True) transcript pieces for the CURRENT
         # utterance. Needed because UtteranceEnd carries no transcript text itself —
         # it's just a timestamp saying "speech has ended". So we keep the last
@@ -34,6 +44,12 @@ class DeepgramSTT:
         self._utterance_dispatched = False  # guards against firing twice for one utterance
 
     async def connect(self):
+        self._should_run = True
+        await self._do_connect()
+
+    async def _do_connect(self):
+        """The actual connection logic — used for both the initial connect()
+        and every reconnect attempt, so they can never drift out of sync."""
         url = (
             f"wss://api.deepgram.com/v1/listen"
             f"?model=nova-3"
@@ -55,28 +71,97 @@ class DeepgramSTT:
             ping_timeout=5,
             logger=None,
         )
-        self._connected = True   # ← was missing
+        self._connected = True
+
+        # A stale recv_task from a previous (now-dead) connection should
+        # already have exited on its own, but cancel defensively just in case.
+        if self._recv_task and not self._recv_task.done():
+            self._recv_task.cancel()
+
         self._recv_task = asyncio.create_task(
             self._receive_loop(), name="deepgram-recv"
-        )   # ← was missing
+        )
+        # Fresh connection = fresh utterance state. Anything buffered from
+        # before the drop is unrecoverable audio anyway, so start clean.
+        self._utterance_buffer     = ""
+        self._utterance_dispatched = False
+        self._reconnect_attempt    = 0
         logger.info("Deepgram STT connected.")
+
+    def _trigger_reconnect(self):
+        """
+        Idempotent — safe to call from many places at once (send() can fail
+        dozens of times per second while offline; we only want ONE reconnect
+        loop running at a time, not one per failed send).
+        """
+        if not self._should_run:
+            return  # a deliberate disconnect() is in progress/done, not a drop
+        self._connected = False
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(
+                self._reconnect_loop(), name="deepgram-reconnect"
+            )
+
+    async def _reconnect_loop(self):
+        """
+        Retries with capped exponential backoff (0.5s, 1s, 2s, 4s, 5s, 5s, ...)
+        until either reconnection succeeds or disconnect() is called.
+        Audio arriving during this gap is dropped (send() SKIPPED warnings) —
+        a brief gap mid-call is far better than the previous behavior of
+        being permanently deaf for the rest of the call.
+        """
+        backoff     = 0.5
+        max_backoff = 5.0
+
+        while self._should_run and not self._connected:
+            self._reconnect_attempt += 1
+            logger.warning(
+                f"Deepgram reconnecting (attempt #{self._reconnect_attempt}), "
+                f"waiting {backoff:.1f}s..."
+            )
+            await asyncio.sleep(backoff)
+
+            if not self._should_run:
+                return  # disconnect() was called while we were waiting
+
+            try:
+                await self._do_connect()
+                logger.info(
+                    f"Deepgram reconnected successfully after "
+                    f"{self._reconnect_attempt} attempt(s)."
+                )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"Deepgram reconnect attempt #{self._reconnect_attempt} failed: {e}"
+                )
+                backoff = min(backoff * 2, max_backoff)
 
     async def send(self, audio_bytes: bytes):
         if self._ws and self._connected and audio_bytes:
             try:
                 await self._ws.send(audio_bytes)
                 self._audio_chunks_sent += 1
-                # DEBUG: heartbeat every ~2s of audio (100 frames @ 20ms) so we can
-                # confirm audio is flowing continuously, including during "silent" attempts
-                if self._audio_chunks_sent % 100 == 0:
-                    logger.info(f"[DG-DEBUG] audio flowing: {self._audio_chunks_sent} chunks sent to Deepgram so far")
+                if self._audio_chunks_sent == 1:
+                    # One-time sanity check: confirms audio format/size reaching
+                    # Deepgram is what we expect (16-bit PCM = 2 bytes/sample).
+                    logger.info(f"First audio chunk sent to Deepgram: {len(audio_bytes)} bytes")
             except Exception as e:
                 logger.warning(f"Deepgram send error: {e}")
+                self._trigger_reconnect()
         else:
             logger.warning(f"Deepgram send SKIPPED: ws={self._ws is not None} connected={self._connected} bytes={len(audio_bytes) if audio_bytes else 0}")
 
     async def disconnect(self):
-        self._connected = False
+        self._should_run = False  # tells any in-flight reconnect loop to stop retrying
+        self._connected  = False
+
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
 
         if self._ws:
             try:
@@ -111,10 +196,6 @@ class DeepgramSTT:
                 msg_type = msg.get("type", "")
                 self._msg_counter += 1
 
-                # DEBUG: log every single message type Deepgram sends, so we can see
-                # exactly what happens between attempts (not just the final one)
-                logger.info(f"[DG-DEBUG] msg #{self._msg_counter} type={msg_type} raw_keys={list(msg.keys())}")
-
                 if msg_type == "Results":
                     try:
                         transcript   = msg["channel"]["alternatives"][0]["transcript"].strip()
@@ -123,12 +204,11 @@ class DeepgramSTT:
                     except (KeyError, IndexError):
                         continue
 
-                    # DEBUG: log EVERY Results message with a transcript, interim or not,
-                    # so we can see partial recognition even when speech_final never fires
+                    # Every fragment (interim or final) logged at debug — visible if you
+                    # need to dig into a specific call, silent in normal operation.
                     if transcript:
-                        logger.info(
-                            f"[DG-DEBUG] transcript='{transcript}' "
-                            f"is_final={is_final} speech_final={speech_final}"
+                        logger.debug(
+                            f"transcript='{transcript}' is_final={is_final} speech_final={speech_final}"
                         )
 
                     # Remember every finalized chunk of THIS utterance. Deepgram can
@@ -159,7 +239,7 @@ class DeepgramSTT:
                     # speech_final=True (this is common, not an edge case — confirmed
                     # by our own logs where a fully-correct transcript was recognized
                     # but only ever reached us via this event, never via speech_final).
-                    logger.info(f"[DG-DEBUG] UtteranceEnd received: {msg}")
+                    logger.debug(f"UtteranceEnd received: {msg}")
 
                     if self._utterance_buffer and not self._utterance_dispatched:
                         final_text = self._utterance_buffer
@@ -181,9 +261,9 @@ class DeepgramSTT:
 
         except websockets.ConnectionClosed as e:
             logger.warning(
-                f"[DG-DEBUG] Deepgram websocket CLOSED unexpectedly: code={e.code} reason={e.reason} "
-                f"— no auto-reconnect exists, all further audio sends will silently fail from here on"
+                f"Deepgram websocket CLOSED unexpectedly: code={e.code} reason={e.reason}"
             )
+            self._trigger_reconnect()
         except asyncio.CancelledError:
             pass
         except Exception as e:
